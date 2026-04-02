@@ -24,6 +24,9 @@ def _create_enricher(pid, api_key, enricher_type):
     elif pid == "apollo":
         from providers.apollo_client import ApolloEnricher
         return ApolloEnricher(api_key)
+    elif pid == "perplexity":
+        from providers.perplexity_client import PerplexityEnricher
+        return PerplexityEnricher(api_key)
     return None
 
 
@@ -66,6 +69,11 @@ FREE_TIER_INFO = {
         "1 credit per email lookup, 8 credits per phone number. "
         "Free: 75 credits/mo (basic API access), no credit card required. "
         "Full enrichment requires Basic plan ($49/mo, 30,000 credits/yr)."
+    ),
+    "perplexity": (
+        "Uses Sonar API to search the entire web for owner info. "
+        "Best enricher for local businesses. ~$0.005-0.01 per query. "
+        "No free tier — paid only. Get key at console.perplexity.ai."
     ),
 }
 

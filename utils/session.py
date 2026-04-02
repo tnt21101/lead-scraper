@@ -36,6 +36,12 @@ API_KEY_CONFIG: Dict[str, Dict] = {
         "type": "both",
         "help": "https://apollo.io/",
     },
+    "perplexity": {
+        "label": "Perplexity",
+        "key_name": "perplexity_api_key",
+        "type": "both",
+        "help": "https://console.perplexity.ai/",
+    },
 }
 
 
