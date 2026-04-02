@@ -179,8 +179,6 @@ if email_providers:
 if social_providers:
     status_parts.append("Socials: %s" % ", ".join(social_providers))
 st.caption("Enrichment: %s" % " | ".join(status_parts))
-else:
-    st.caption("No enrichment keys set — website scraper will still find emails and socials from business websites (free)")
 
 # ── Run Pipeline ──────────────────────────────────────────────────────
 if st.button("Search & Enrich", type="primary", use_container_width=True, disabled=not query):
