@@ -74,6 +74,10 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         # Step 2: Organization Top People — find owner/senior contacts
         current = self._enrich_people(current, domain)
 
+        # Step 3: If top_people missed, try people search with seniority filters
+        if not current.personal_email and not current.owner_name:
+            current = self._search_people(current, domain)
+
         return current
 
     def _enrich_organization(self, lead: BusinessLead, domain: str) -> BusinessLead:
@@ -194,6 +198,71 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
                 updates["phone"] = phone_numbers[0].get("sanitized_number")
 
         # Owner socials
+        if not lead.owner_linkedin and person.get("linkedin_url"):
+            updates["owner_linkedin"] = person["linkedin_url"]
+        if not lead.owner_facebook and person.get("facebook_url"):
+            updates["owner_facebook"] = person["facebook_url"]
+        if not lead.owner_twitter and person.get("twitter_url"):
+            updates["owner_twitter"] = person["twitter_url"]
+
+        if updates:
+            return lead.model_copy(update=updates)
+        return lead
+
+    def _search_people(self, lead: BusinessLead, domain: str) -> BusinessLead:
+        """Fallback: Use People API Search to find people by seniority at the company."""
+        self._rate.wait()
+
+        try:
+            resp = self._client.post(
+                "/api/v1/mixed_people/api_search",
+                json={
+                    "organization_domains": [domain],
+                    "person_seniorities": [
+                        "owner", "founder", "c_suite", "vp", "director", "manager",
+                    ],
+                    "page": 1,
+                    "per_page": 1,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise RuntimeError("Apollo.io rate limit reached") from e
+            body = ""
+            try:
+                body = e.response.text[:200]
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Apollo.io api_search returned %d: %s" % (e.response.status_code, body)
+            ) from e
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError("Apollo.io api_search error: %s" % e) from e
+
+        people = data.get("people") or []
+        if not people:
+            return lead
+
+        person = people[0]
+
+        updates = {}
+        if "apollo" not in lead.enriched_by:
+            updates["enriched_by"] = lead.enriched_by + ["apollo"]
+
+        if not lead.owner_name and person.get("name"):
+            updates["owner_name"] = person["name"]
+        if not lead.owner_title and person.get("title"):
+            updates["owner_title"] = person["title"]
+        if not lead.personal_email and person.get("email"):
+            updates["personal_email"] = person["email"]
+        if not lead.phone:
+            phone_numbers = person.get("phone_numbers") or []
+            if phone_numbers:
+                updates["phone"] = phone_numbers[0].get("sanitized_number")
         if not lead.owner_linkedin and person.get("linkedin_url"):
             updates["owner_linkedin"] = person["linkedin_url"]
         if not lead.owner_facebook and person.get("facebook_url"):
