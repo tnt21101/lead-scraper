@@ -33,7 +33,7 @@ API_KEY_CONFIG: Dict[str, Dict] = {
     "apollo": {
         "label": "Apollo.io",
         "key_name": "apollo_api_key",
-        "type": "social",
+        "type": "both",
         "help": "https://apollo.io/",
     },
 }
@@ -55,8 +55,13 @@ def set_api_key(provider: str, key: str) -> None:
 def get_configured_providers(provider_type: Optional[str] = None) -> List[str]:
     result = []
     for pid, config in API_KEY_CONFIG.items():
-        if provider_type and config["type"] != provider_type:
-            continue
+        ptype = config["type"]
+        if provider_type:
+            # "both" matches either "email" or "social"
+            if ptype == "both" and provider_type in ("email", "social"):
+                pass  # matches
+            elif ptype != provider_type:
+                continue
         if get_api_key(pid):
             result.append(pid)
     return result

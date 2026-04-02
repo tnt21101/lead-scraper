@@ -56,9 +56,9 @@ FREE_TIER_INFO = {
         "Paid: $23/mo for 1,000 searches."
     ),
     "hunter": (
-        "Uses Domain Search API (/v2/domain-search). "
-        "1 credit per domain lookup — returns emails, names, titles, LinkedIn. "
-        "Free: 50 credits/mo, no credit card required. "
+        "Uses Email Finder (/v2/email-finder) when owner name is known, "
+        "falls back to Domain Search (/v2/domain-search). "
+        "1 credit per lookup. Free: 50 credits/mo, no credit card required. "
         "Paid: $49/mo for 2,000 credits."
     ),
     "apollo": (
@@ -82,13 +82,17 @@ with st.expander("API Keys", expanded=not get_configured_providers("maps")):
 
     groups = {
         "maps": "Google Maps Scraper (required)",
-        "email": "Email Enrichment (optional)",
-        "social": "Social Enrichment (optional)",
+        "enrichment": "Email & Social Enrichment (optional)",
+    }
+
+    type_filters = {
+        "maps": lambda t: t == "maps",
+        "enrichment": lambda t: t in ("email", "social", "both"),
     }
 
     for ptype, group_label in groups.items():
         st.markdown("**%s**" % group_label)
-        providers = {k: v for k, v in API_KEY_CONFIG.items() if v["type"] == ptype}
+        providers = {k: v for k, v in API_KEY_CONFIG.items() if type_filters[ptype](v["type"])}
         cols = st.columns(len(providers))
         for col, (pid, config) in zip(cols, providers.items()):
             with col:
