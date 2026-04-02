@@ -1,15 +1,18 @@
 """Apollo.io enrichment provider — emails + social profiles.
 
-Uses two endpoints:
+Free plan endpoints used:
 1. Organization Enrichment (/v1/organizations/enrich) — company socials by domain
-2. People Match (/v1/people/match) — owner email/phone/socials by name + domain
+2. Mixed People Search (/v1/mixed_people/search) — find people by company + seniority
+3. Contacts Search (/v1/contacts/search) — search contacts database
+
+NOTE: People Match (/v1/people/match) is NOT available on the free plan.
 
 Free tier: 75 credits/month, no credit card required.
 API docs: https://docs.apollo.io/reference
 """
 
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -22,7 +25,11 @@ BASE_URL = "https://api.apollo.io/v1"
 
 
 class ApolloEnricher(EmailEnricher, SocialEnricher):
-    """Apollo.io serves as both email and social enricher."""
+    """Apollo.io serves as both email and social enricher.
+
+    Uses only free-plan endpoints: organizations/enrich,
+    mixed_people/search, and contacts/search.
+    """
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
@@ -61,19 +68,16 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
 
         current = lead
 
-        # Strategy 1: Organization Enrichment — gets company socials from domain
-        # This works even without an owner name
+        # Step 1: Organization Enrichment — company socials from domain
         current = self._enrich_organization(current, domain)
 
-        # Strategy 2: People Match — gets owner email/phone/socials
-        # Only works if we have an owner name or can search by domain
+        # Step 2: Mixed People Search — find owner/senior contacts at company
         current = self._enrich_people(current, domain)
 
         return current
 
     def _enrich_organization(self, lead: BusinessLead, domain: str) -> BusinessLead:
         """Use Organization Enrichment to get company social profiles."""
-        # Skip if we already have company socials
         if lead.company_linkedin and lead.company_facebook:
             return lead
 
@@ -101,7 +105,6 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
 
         updates = {"enriched_by": lead.enriched_by + ["apollo"]}
 
-        # Company socials
         if not lead.company_linkedin and org.get("linkedin_url"):
             updates["company_linkedin"] = org["linkedin_url"]
         if not lead.company_facebook and org.get("facebook_url"):
@@ -109,47 +112,37 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         if not lead.company_twitter and org.get("twitter_url"):
             updates["company_twitter"] = org["twitter_url"]
 
-        # Company email
-        if not lead.business_email:
-            primary = org.get("primary_email")
-            if primary:
-                updates["business_email"] = primary
+        if not lead.business_email and org.get("primary_email"):
+            updates["business_email"] = org["primary_email"]
 
-        # Company phone
         if not lead.phone and org.get("phone"):
             updates["phone"] = org["phone"]
 
         return lead.model_copy(update=updates)
 
     def _enrich_people(self, lead: BusinessLead, domain: str) -> BusinessLead:
-        """Use People Match or People Search to find owner contact info."""
-        # If we already have personal email and owner socials, skip
+        """Use Mixed People Search to find owner/senior contacts at the company."""
         if lead.personal_email and lead.owner_linkedin:
             return lead
 
         self._rate.wait()
 
         try:
+            payload = {
+                "organization_domains": [domain],
+                "person_seniorities": [
+                    "owner", "founder", "c_suite", "vp", "director", "manager",
+                ],
+                "page": 1,
+                "per_page": 1,
+            }
+
+            # If we know the owner name, add it to narrow results
             if lead.owner_name:
-                # We have a name — use People Match (most accurate)
-                payload = {"reveal_personal_emails": True, "domain": domain}
                 parts = lead.owner_name.split(maxsplit=1)
-                payload["first_name"] = parts[0]
-                if len(parts) > 1:
-                    payload["last_name"] = parts[1]
-                payload["organization_name"] = lead.business_name
+                payload["person_name"] = lead.owner_name
 
-                resp = self._client.post("/people/match", json=payload)
-            else:
-                # No name — search for people at this company with senior titles
-                payload = {
-                    "organization_domains": [domain],
-                    "person_seniorities": ["owner", "founder", "c_suite", "vp", "director", "manager"],
-                    "page": 1,
-                    "per_page": 1,
-                }
-                resp = self._client.post("/mixed_people/search", json=payload)
-
+            resp = self._client.post("/mixed_people/search", json=payload)
             resp.raise_for_status()
             data = resp.json()
         except httpx.HTTPStatusError as e:
@@ -161,16 +154,11 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         except Exception:
             return lead
 
-        # Extract person from response (different structure per endpoint)
-        person = data.get("person") or {}
-        if not person:
-            # mixed_people/search returns people in a list
-            people = data.get("people") or []
-            if people:
-                person = people[0]
-
-        if not person:
+        people = data.get("people") or []
+        if not people:
             return lead
+
+        person = people[0]
 
         updates = {}
         if "apollo" not in lead.enriched_by:
