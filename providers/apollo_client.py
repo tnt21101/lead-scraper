@@ -28,7 +28,11 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         self._api_key = api_key
         self._client = httpx.Client(
             base_url=BASE_URL,
-            headers={"Content-Type": "application/json", "Cache-Control": "no-cache"},
+            headers={
+                "Content-Type": "application/json",
+                "Cache-Control": "no-cache",
+                "X-Api-Key": api_key,
+            },
             timeout=30.0,
         )
         self._rate = RateLimiter(calls_per_second=1)
@@ -39,10 +43,7 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
 
     def test_connection(self) -> bool:
         try:
-            resp = self._client.post(
-                "/auth/health",
-                headers={"X-Api-Key": self._api_key},
-            )
+            resp = self._client.get("/auth/health")
             return resp.status_code == 200
         except Exception:
             return False
@@ -62,7 +63,7 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
 
         try:
             # Use people/match for best results
-            payload: dict = {"api_key": self._api_key, "reveal_personal_emails": True}
+            payload: dict = {"reveal_personal_emails": True}
 
             if lead.owner_name:
                 parts = lead.owner_name.split(maxsplit=1)
