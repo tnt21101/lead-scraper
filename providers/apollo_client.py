@@ -144,7 +144,7 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
                 # No name — search for people at this company with senior titles
                 payload = {
                     "organization_domains": [domain],
-                    "person_seniorities": ["owner", "founder", "c_suite", "vp", "director"],
+                    "person_seniorities": ["owner", "founder", "c_suite", "vp", "director", "manager"],
                     "page": 1,
                     "per_page": 1,
                 }
