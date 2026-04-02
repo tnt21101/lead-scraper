@@ -54,7 +54,7 @@ class ScaleSERPScraper(MapsScraper):
                 "/search",
                 params={
                     "api_key": self._api_key,
-                    "search_type": "maps",
+                    "search_type": "places",
                     "q": query,
                     "page": page,
                     "num": min(20, limit - len(leads)),
@@ -63,7 +63,7 @@ class ScaleSERPScraper(MapsScraper):
             resp.raise_for_status()
             data = resp.json()
 
-            results = data.get("maps_results", data.get("local_results", []))
+            results = data.get("places_results", data.get("local_results", []))
             if not results:
                 break
 

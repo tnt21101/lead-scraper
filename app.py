@@ -40,11 +40,33 @@ def _test_provider(pid, api_key):
 
 # ── Free tier info per provider ───────────────────────────────────────
 FREE_TIER_INFO = {
-    "outscraper": "500 businesses/month — no credit card required",
-    "serpapi": "250 searches/month — no credit card required",
-    "scaleserp": "125 searches/month — no credit card required",
-    "hunter": "50 email lookups/month — no credit card required",
-    "apollo": "75 credits/month — no credit card required (some features limited over time)",
+    "outscraper": (
+        "Uses Google Maps Search API (/maps/search-v3). "
+        "Free: 500 businesses/mo, no credit card required. "
+        "Paid: ~$3 per 1,000 records (pay-as-you-go)."
+    ),
+    "serpapi": (
+        "Uses Google Maps engine (engine=google_maps). "
+        "Free: 250 searches/mo across all engines, no credit card required. "
+        "Paid: $25/mo for 1,000 searches."
+    ),
+    "scaleserp": (
+        "Uses Places search (search_type=places). "
+        "Free: 125 searches/mo, no credit card required. "
+        "Paid: $23/mo for 1,000 searches."
+    ),
+    "hunter": (
+        "Uses Domain Search API (/v2/domain-search). "
+        "1 credit per domain lookup — returns emails, names, titles, LinkedIn. "
+        "Free: 50 credits/mo, no credit card required. "
+        "Paid: $49/mo for 2,000 credits."
+    ),
+    "apollo": (
+        "Uses People Match API (/v1/people/match). "
+        "1 credit per email lookup, 8 credits per phone number. "
+        "Free: 75 credits/mo (basic API access), no credit card required. "
+        "Full enrichment requires Basic plan ($49/mo, 30,000 credits/yr)."
+    ),
 }
 
 
@@ -97,8 +119,9 @@ with st.expander("API Keys", expanded=not get_configured_providers("maps")):
 
     st.markdown("---")
     st.info(
-        "All services above offer free tiers with **no credit card required**. "
-        "Hover over the **?** icon next to each field for details and signup links."
+        "All services above offer free API access with **no credit card required**. "
+        "Hover over the **?** icon next to each field for endpoint details, credit costs, and upgrade pricing.\n\n"
+        "**Best free combo:** Outscraper (500 businesses/mo) + Hunter.io (50 email lookups/mo)"
     )
 
 st.markdown("---")
