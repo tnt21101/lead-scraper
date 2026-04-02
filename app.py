@@ -101,33 +101,37 @@ with st.expander("API Keys", expanded=not get_configured_providers("maps")):
     for ptype, group_label in groups.items():
         st.markdown("**%s**" % group_label)
         providers = {k: v for k, v in API_KEY_CONFIG.items() if type_filters[ptype](v["type"])}
-        cols = st.columns(len(providers))
-        for col, (pid, config) in zip(cols, providers.items()):
-            with col:
-                current = get_api_key(pid) or ""
-                val = st.text_input(
-                    config["label"],
-                    value=current,
-                    type="password",
-                    key="key_%s" % pid,
-                    help="%s — %s" % (FREE_TIER_INFO.get(pid, ""), config["help"]),
-                )
-                if val != current:
-                    set_api_key(pid, val)
+        # Max 3 columns per row
+        provider_list = list(providers.items())
+        for row_start in range(0, len(provider_list), 3):
+            row_items = provider_list[row_start:row_start + 3]
+            cols = st.columns(len(row_items))
+            for col, (pid, config) in zip(cols, row_items):
+                with col:
+                    current = get_api_key(pid) or ""
+                    val = st.text_input(
+                        config["label"],
+                        value=current,
+                        type="password",
+                        key="key_%s" % pid,
+                        help="%s — %s" % (FREE_TIER_INFO.get(pid, ""), config["help"]),
+                    )
+                    if val != current:
+                        set_api_key(pid, val)
 
-                # Status + Test button
-                if get_api_key(pid):
-                    c1, c2 = st.columns([1, 1])
-                    with c1:
-                        st.success("Set", icon="✅")
-                    with c2:
-                        if st.button("Test", key="test_%s" % pid):
-                            with st.spinner("Testing..."):
-                                ok, msg = _test_provider(pid, get_api_key(pid))
-                                if ok:
-                                    st.success(msg)
-                                else:
-                                    st.error(msg)
+                    # Status + Test button
+                    if get_api_key(pid):
+                        c1, c2 = st.columns([1, 1])
+                        with c1:
+                            st.success("Set", icon="✅")
+                        with c2:
+                            if st.button("Test", key="test_%s" % pid):
+                                with st.spinner("Testing..."):
+                                    ok, msg = _test_provider(pid, get_api_key(pid))
+                                    if ok:
+                                        st.success(msg)
+                                    else:
+                                        st.error(msg)
 
     st.markdown("---")
     st.info(
