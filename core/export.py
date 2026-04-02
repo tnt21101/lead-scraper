@@ -92,12 +92,14 @@ def export_excel(leads_data: List[Dict], columns: Optional[List[str]] = None) ->
         # Auto-adjust column widths
         worksheet = writer.sheets["Leads"]
         for i, col in enumerate(df.columns):
-            max_len = max(
-                df[col].astype(str).map(len).max(),
-                len(col),
-            )
-            worksheet.column_dimensions[chr(65 + i) if i < 26 else f"A{chr(65 + i - 26)}"].width = (
-                min(max_len + 2, 50)
-            )
+            try:
+                max_len = max(
+                    df[col].astype(str).apply(len).max(),
+                    len(str(col)),
+                )
+            except Exception:
+                max_len = len(str(col))
+            col_letter = chr(65 + i) if i < 26 else "A%s" % chr(65 + i - 26)
+            worksheet.column_dimensions[col_letter].width = min(max_len + 2, 50)
 
     return buffer.getvalue()
