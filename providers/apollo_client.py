@@ -1,13 +1,11 @@
 """Apollo.io enrichment provider — emails + social profiles.
 
-Free plan endpoints used:
-1. Organization Search (POST /api/v1/mixed_companies/search)
-2. Organization Top People (POST /api/v1/mixed_people/organization_top_people)
-
-NOTE: Auth health check uses a different base: /v1/auth/health (no /api prefix)
+Verified endpoints from official docs (https://docs.apollo.io/reference):
+1. People Enrichment: POST /api/v1/people/match
+2. People API Search: POST /api/v1/mixed_people/api_search
+3. Organization Enrichment: GET /api/v1/organizations/enrich?domain=X
 
 Free tier: 75 credits/month, no credit card required.
-API docs: https://docs.apollo.io/reference
 """
 
 from datetime import datetime
@@ -26,8 +24,7 @@ BASE_URL = "https://api.apollo.io"
 class ApolloEnricher(EmailEnricher, SocialEnricher):
     """Apollo.io serves as both email and social enricher.
 
-    Uses only free-plan endpoints: mixed_companies/search
-    and mixed_people/organization_top_people.
+    Tries endpoints in order, skipping any that return 403.
     """
 
     def __init__(self, api_key: str) -> None:
@@ -42,6 +39,8 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
             timeout=30.0,
         )
         self._rate = RateLimiter(calls_per_second=1)
+        # Track which endpoints are blocked so we don't retry them
+        self._blocked_endpoints = set()
 
     @property
     def name(self) -> str:
@@ -49,7 +48,6 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
 
     def test_connection(self) -> bool:
         try:
-            # Health check uses /v1/ not /api/v1/
             resp = self._client.get("/v1/auth/health")
             return resp.status_code == 200
         except Exception:
@@ -60,60 +58,143 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         lead: BusinessLead,
         on_progress: Optional[ProgressCallback] = None,
     ) -> BusinessLead:
-        """Enrich a lead with company socials, then owner email/phone/socials."""
         domain = extract_domain(lead.website) if lead.website else None
-
         if not domain:
             return lead
 
         current = lead
 
-        # Step 1: Organization Top People — find owner + company socials
-        current = self._enrich_people(current, domain)
+        # Try Organization Enrichment for company socials
+        if "org_enrich" not in self._blocked_endpoints:
+            current = self._org_enrich(current, domain)
 
-        # Step 2: Fallback — people search with seniority filters
-        if not current.personal_email and not current.owner_name:
-            current = self._search_people(current, domain)
+        # Try People Enrichment if we have a name
+        if current.owner_name and "people_match" not in self._blocked_endpoints:
+            current = self._people_match(current, domain)
+
+        # Try People API Search as fallback
+        if (not current.personal_email or not current.owner_name) and "people_search" not in self._blocked_endpoints:
+            current = self._people_search(current, domain)
 
         return current
 
-    def _enrich_people(self, lead: BusinessLead, domain: str) -> BusinessLead:
-        """Use Organization Top People to find owner/senior contacts."""
-        if lead.personal_email and lead.owner_linkedin:
+    # ── Organization Enrichment ───────────────────────────────────────
+    # GET /api/v1/organizations/enrich?domain=X
+    def _org_enrich(self, lead: BusinessLead, domain: str) -> BusinessLead:
+        if lead.company_linkedin and lead.company_facebook:
             return lead
 
         self._rate.wait()
-
         try:
-            resp = self._client.post(
-                "/api/v1/mixed_people/organization_top_people",
-                json={
-                    "organization_domain": domain,
-                },
+            resp = self._client.get(
+                "/api/v1/organizations/enrich",
+                params={"domain": domain},
             )
+            if resp.status_code == 403:
+                self._blocked_endpoints.add("org_enrich")
+                return lead
             resp.raise_for_status()
             data = resp.json()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
                 raise RuntimeError("Apollo.io rate limit reached") from e
-            body = ""
-            try:
-                body = e.response.text[:200]
-            except Exception:
-                pass
-            raise RuntimeError(
-                "Apollo.io top_people returned %d: %s" % (e.response.status_code, body)
-            ) from e
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError("Apollo.io top_people error: %s" % e) from e
+            return lead
+        except Exception:
+            return lead
 
-        people = data.get("people") or data.get("top_people") or []
+        org = data.get("organization") or {}
+        if not org:
+            return lead
+
+        updates = {"enriched_by": lead.enriched_by + ["apollo"]}
+        if not lead.company_linkedin and org.get("linkedin_url"):
+            updates["company_linkedin"] = org["linkedin_url"]
+        if not lead.company_facebook and org.get("facebook_url"):
+            updates["company_facebook"] = org["facebook_url"]
+        if not lead.company_twitter and org.get("twitter_url"):
+            updates["company_twitter"] = org["twitter_url"]
+        if not lead.business_email and org.get("primary_email"):
+            updates["business_email"] = org["primary_email"]
+        if not lead.phone and org.get("phone"):
+            updates["phone"] = org["phone"]
+
+        return lead.model_copy(update=updates)
+
+    # ── People Enrichment ─────────────────────────────────────────────
+    # POST /api/v1/people/match
+    def _people_match(self, lead: BusinessLead, domain: str) -> BusinessLead:
+        if not lead.owner_name:
+            return lead
+
+        self._rate.wait()
+        parts = lead.owner_name.split(maxsplit=1)
+        payload = {
+            "first_name": parts[0],
+            "domain": domain,
+            "reveal_personal_emails": True,
+        }
+        if len(parts) > 1:
+            payload["last_name"] = parts[1]
+
+        try:
+            resp = self._client.post("/api/v1/people/match", json=payload)
+            if resp.status_code == 403:
+                self._blocked_endpoints.add("people_match")
+                return lead
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise RuntimeError("Apollo.io rate limit reached") from e
+            return lead
+        except Exception:
+            return lead
+
+        person = data.get("person") or {}
+        return self._apply_person_data(lead, person)
+
+    # ── People API Search ─────────────────────────────────────────────
+    # POST /api/v1/mixed_people/api_search
+    def _people_search(self, lead: BusinessLead, domain: str) -> BusinessLead:
+        self._rate.wait()
+
+        payload = {
+            "q_organization_domains_list": [domain],
+            "person_seniorities": [
+                "owner", "founder", "c_suite", "partner", "vp", "head",
+                "director", "manager",
+            ],
+            "page": 1,
+            "per_page": 1,
+        }
+
+        try:
+            resp = self._client.post(
+                "/api/v1/mixed_people/api_search", json=payload
+            )
+            if resp.status_code == 403:
+                self._blocked_endpoints.add("people_search")
+                return lead
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise RuntimeError("Apollo.io rate limit reached") from e
+            return lead
+        except Exception:
+            return lead
+
+        people = data.get("people") or []
         if not people:
             return lead
 
         person = self._pick_best_person(people, lead.owner_name)
+        return self._apply_person_data(lead, person)
+
+    # ── Shared helpers ────────────────────────────────────────────────
+    def _apply_person_data(self, lead: BusinessLead, person: dict) -> BusinessLead:
+        if not person:
+            return lead
 
         updates = {}
         if "apollo" not in lead.enriched_by:
@@ -128,12 +209,13 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         # Email
         if not lead.personal_email and person.get("email"):
             updates["personal_email"] = person["email"]
-            if person.get("email_confidence"):
-                updates["email_confidence"] = person["email_confidence"]
+            if person.get("extrapolated_email_confidence"):
+                updates["email_confidence"] = person["extrapolated_email_confidence"]
 
         # Phone
         if not lead.phone:
-            phone_numbers = person.get("phone_numbers") or []
+            contact = person.get("contact") or {}
+            phone_numbers = contact.get("phone_numbers") or person.get("phone_numbers") or []
             if phone_numbers:
                 updates["phone"] = phone_numbers[0].get("sanitized_number")
 
@@ -160,96 +242,17 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
             return lead.model_copy(update=updates)
         return lead
 
-    def _search_people(self, lead: BusinessLead, domain: str) -> BusinessLead:
-        """Fallback: Use People API Search to find people by seniority at the company."""
-        self._rate.wait()
-
-        try:
-            resp = self._client.post(
-                "/api/v1/mixed_people/api_search",
-                json={
-                    "organization_domains": [domain],
-                    "person_seniorities": [
-                        "owner", "founder", "c_suite", "vp", "director", "manager",
-                    ],
-                    "page": 1,
-                    "per_page": 1,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                raise RuntimeError("Apollo.io rate limit reached") from e
-            body = ""
-            try:
-                body = e.response.text[:200]
-            except Exception:
-                pass
-            raise RuntimeError(
-                "Apollo.io api_search returned %d: %s" % (e.response.status_code, body)
-            ) from e
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError("Apollo.io api_search error: %s" % e) from e
-
-        people = data.get("people") or []
-        if not people:
-            return lead
-
-        person = people[0]
-
-        updates = {}
-        if "apollo" not in lead.enriched_by:
-            updates["enriched_by"] = lead.enriched_by + ["apollo"]
-
-        if not lead.owner_name and person.get("name"):
-            updates["owner_name"] = person["name"]
-        if not lead.owner_title and person.get("title"):
-            updates["owner_title"] = person["title"]
-        if not lead.personal_email and person.get("email"):
-            updates["personal_email"] = person["email"]
-        if not lead.phone:
-            phone_numbers = person.get("phone_numbers") or []
-            if phone_numbers:
-                updates["phone"] = phone_numbers[0].get("sanitized_number")
-        if not lead.owner_linkedin and person.get("linkedin_url"):
-            updates["owner_linkedin"] = person["linkedin_url"]
-        if not lead.owner_facebook and person.get("facebook_url"):
-            updates["owner_facebook"] = person["facebook_url"]
-        if not lead.owner_twitter and person.get("twitter_url"):
-            updates["owner_twitter"] = person["twitter_url"]
-
-        # Company socials from person's organization data
-        org = person.get("organization") or {}
-        if not lead.company_linkedin and org.get("linkedin_url"):
-            updates["company_linkedin"] = org["linkedin_url"]
-        if not lead.company_facebook and org.get("facebook_url"):
-            updates["company_facebook"] = org["facebook_url"]
-        if not lead.company_twitter and org.get("twitter_url"):
-            updates["company_twitter"] = org["twitter_url"]
-        if not lead.business_email and org.get("primary_email"):
-            updates["business_email"] = org["primary_email"]
-
-        if updates:
-            return lead.model_copy(update=updates)
-        return lead
-
     @staticmethod
     def _pick_best_person(people: list, owner_name: Optional[str] = None) -> dict:
-        """Pick the most relevant person from a list of top people."""
         if not people:
             return {}
 
-        # If we know the owner name, look for them first
         if owner_name:
             name_lower = owner_name.lower()
             for p in people:
                 if name_lower in (p.get("name") or "").lower():
                     return p
 
-        # Rank by seniority
         priority_titles = [
             "owner", "founder", "co-founder", "ceo", "president",
             "cto", "cfo", "coo", "chief", "vp", "vice president",
