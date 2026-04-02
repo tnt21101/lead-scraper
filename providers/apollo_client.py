@@ -68,74 +68,14 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
 
         current = lead
 
-        # Step 1: Organization Search — company socials from domain
-        current = self._enrich_organization(current, domain)
-
-        # Step 2: Organization Top People — find owner/senior contacts
+        # Step 1: Organization Top People — find owner + company socials
         current = self._enrich_people(current, domain)
 
-        # Step 3: If top_people missed, try people search with seniority filters
+        # Step 2: Fallback — people search with seniority filters
         if not current.personal_email and not current.owner_name:
             current = self._search_people(current, domain)
 
         return current
-
-    def _enrich_organization(self, lead: BusinessLead, domain: str) -> BusinessLead:
-        """Use Organization Search to get company social profiles."""
-        if lead.company_linkedin and lead.company_facebook:
-            return lead
-
-        self._rate.wait()
-
-        try:
-            resp = self._client.post(
-                "/api/v1/mixed_companies/search",
-                json={
-                    "organization_domains": [domain],
-                    "page": 1,
-                    "per_page": 1,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                raise RuntimeError("Apollo.io rate limit reached") from e
-            body = ""
-            try:
-                body = e.response.text[:200]
-            except Exception:
-                pass
-            raise RuntimeError(
-                "Apollo.io mixed_companies/search returned %d: %s" % (e.response.status_code, body)
-            ) from e
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError("Apollo.io mixed_companies/search error: %s" % e) from e
-
-        orgs = data.get("organizations") or data.get("accounts") or []
-        if not orgs:
-            return lead
-
-        org = orgs[0]
-
-        updates = {"enriched_by": lead.enriched_by + ["apollo"]}
-
-        if not lead.company_linkedin and org.get("linkedin_url"):
-            updates["company_linkedin"] = org["linkedin_url"]
-        if not lead.company_facebook and org.get("facebook_url"):
-            updates["company_facebook"] = org["facebook_url"]
-        if not lead.company_twitter and org.get("twitter_url"):
-            updates["company_twitter"] = org["twitter_url"]
-
-        if not lead.business_email and org.get("primary_email"):
-            updates["business_email"] = org["primary_email"]
-
-        if not lead.phone and org.get("phone"):
-            updates["phone"] = org["phone"]
-
-        return lead.model_copy(update=updates)
 
     def _enrich_people(self, lead: BusinessLead, domain: str) -> BusinessLead:
         """Use Organization Top People to find owner/senior contacts."""
@@ -205,6 +145,17 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         if not lead.owner_twitter and person.get("twitter_url"):
             updates["owner_twitter"] = person["twitter_url"]
 
+        # Company socials from person's organization data
+        org = person.get("organization") or {}
+        if not lead.company_linkedin and org.get("linkedin_url"):
+            updates["company_linkedin"] = org["linkedin_url"]
+        if not lead.company_facebook and org.get("facebook_url"):
+            updates["company_facebook"] = org["facebook_url"]
+        if not lead.company_twitter and org.get("twitter_url"):
+            updates["company_twitter"] = org["twitter_url"]
+        if not lead.business_email and org.get("primary_email"):
+            updates["business_email"] = org["primary_email"]
+
         if updates:
             return lead.model_copy(update=updates)
         return lead
@@ -269,6 +220,17 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
             updates["owner_facebook"] = person["facebook_url"]
         if not lead.owner_twitter and person.get("twitter_url"):
             updates["owner_twitter"] = person["twitter_url"]
+
+        # Company socials from person's organization data
+        org = person.get("organization") or {}
+        if not lead.company_linkedin and org.get("linkedin_url"):
+            updates["company_linkedin"] = org["linkedin_url"]
+        if not lead.company_facebook and org.get("facebook_url"):
+            updates["company_facebook"] = org["facebook_url"]
+        if not lead.company_twitter and org.get("twitter_url"):
+            updates["company_twitter"] = org["twitter_url"]
+        if not lead.business_email and org.get("primary_email"):
+            updates["business_email"] = org["primary_email"]
 
         if updates:
             return lead.model_copy(update=updates)
