@@ -93,11 +93,18 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
                 raise RuntimeError("Apollo.io rate limit reached") from e
-            if e.response.status_code in (401, 403):
-                raise RuntimeError("Apollo.io API key invalid") from e
-            return lead
-        except Exception:
-            return lead
+            body = ""
+            try:
+                body = e.response.text[:200]
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Apollo.io organizations/enrich returned %d: %s" % (e.response.status_code, body)
+            ) from e
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError("Apollo.io organizations/enrich error: %s" % e) from e
 
         org = data.get("organization") or {}
         if not org:
@@ -140,11 +147,18 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
                 raise RuntimeError("Apollo.io rate limit reached") from e
-            if e.response.status_code in (401, 403):
-                raise RuntimeError("Apollo.io API key invalid") from e
-            return lead
-        except Exception:
-            return lead
+            body = ""
+            try:
+                body = e.response.text[:200]
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Apollo.io top_people returned %d: %s" % (e.response.status_code, body)
+            ) from e
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError("Apollo.io top_people error: %s" % e) from e
 
         people = data.get("people") or data.get("top_people") or []
         if not people:
