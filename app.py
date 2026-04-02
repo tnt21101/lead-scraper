@@ -165,15 +165,14 @@ with col3:
 email_providers = get_configured_providers("email")
 social_providers = get_configured_providers("social")
 
-status_parts = []
+status_parts = ["Website scraper (free, always active)"]
 if email_providers:
     status_parts.append("Emails: %s" % ", ".join(email_providers))
 if social_providers:
     status_parts.append("Socials: %s" % ", ".join(social_providers))
-if status_parts:
-    st.caption("Auto-enrichment active — %s" % " | ".join(status_parts))
+st.caption("Enrichment: %s" % " | ".join(status_parts))
 else:
-    st.caption("No enrichment keys set — results will include business info only (name, phone, website, address)")
+    st.caption("No enrichment keys set — website scraper will still find emails and socials from business websites (free)")
 
 # ── Run Pipeline ──────────────────────────────────────────────────────
 if st.button("Search & Enrich", type="primary", use_container_width=True, disabled=not query):
