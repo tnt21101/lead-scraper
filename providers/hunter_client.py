@@ -1,8 +1,10 @@
 """Hunter.io email enrichment provider.
 
-Finds email addresses associated with a domain.
-Free tier: 25 searches/month.
+Uses two endpoints:
+1. Email Finder (/v2/email-finder) — finds a specific person's email given name + domain
+2. Domain Search (/v2/domain-search) — lists all emails found for a domain
 
+Free tier: 50 credits/month, no credit card required.
 API docs: https://hunter.io/api-documentation
 """
 
@@ -50,6 +52,71 @@ class HunterEnricher(EmailEnricher):
         if not domain:
             return lead
 
+        # Strategy 1: If we have an owner name, use Email Finder (most accurate)
+        if lead.owner_name:
+            result = self._try_email_finder(lead, domain)
+            if result.personal_email or result.business_email:
+                return result
+
+        # Strategy 2: Domain Search to find all emails for this domain
+        result = self._try_domain_search(lead, domain)
+        return result
+
+    def _try_email_finder(self, lead: BusinessLead, domain: str) -> BusinessLead:
+        """Use Email Finder to locate a specific person's email."""
+        parts = lead.owner_name.split(maxsplit=1)
+        first_name = parts[0]
+        last_name = parts[1] if len(parts) > 1 else ""
+
+        if not first_name:
+            return lead
+
+        self._rate.wait()
+
+        try:
+            params = {
+                "domain": domain,
+                "first_name": first_name,
+                "api_key": self._api_key,
+            }
+            if last_name:
+                params["last_name"] = last_name
+
+            resp = self._client.get("/email-finder", params=params)
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise RuntimeError("Hunter.io rate limit reached") from e
+            return lead
+        except Exception:
+            return lead
+
+        email = data.get("email")
+        if not email:
+            return lead
+
+        confidence = data.get("score", 0)
+        updates = {
+            "personal_email": email,
+            "email_confidence": confidence,
+            "enriched_by": lead.enriched_by + ["hunter"],
+        }
+
+        # Capture name details if we didn't have them
+        if not lead.owner_name:
+            fn = data.get("first_name", "")
+            ln = data.get("last_name", "")
+            if fn:
+                updates["owner_name"] = ("%s %s" % (fn, ln)).strip()
+
+        if not lead.owner_title and data.get("position"):
+            updates["owner_title"] = data["position"]
+
+        return lead.model_copy(update=updates)
+
+    def _try_domain_search(self, lead: BusinessLead, domain: str) -> BusinessLead:
+        """Use Domain Search to find all emails for a domain."""
         self._rate.wait()
 
         try:
@@ -89,7 +156,6 @@ class HunterEnricher(EmailEnricher):
             first_name = entry.get("first_name", "")
             last_name = entry.get("last_name", "")
 
-            # Check if this looks like an owner/decision-maker
             is_owner = any(
                 kw in position
                 for kw in ("owner", "founder", "ceo", "president", "director", "manager")
@@ -98,11 +164,10 @@ class HunterEnricher(EmailEnricher):
             if is_owner and confidence >= best_confidence:
                 owner_email = email_addr
                 best_confidence = confidence
-                # Also capture the owner name if we don't have one
                 if not lead.owner_name and first_name:
                     lead = lead.model_copy(
                         update={
-                            "owner_name": f"{first_name} {last_name}".strip(),
+                            "owner_name": ("%s %s" % (first_name, last_name)).strip(),
                             "owner_title": entry.get("position"),
                         }
                     )
@@ -110,7 +175,7 @@ class HunterEnricher(EmailEnricher):
             if etype == "generic" and not generic_email:
                 generic_email = email_addr
 
-        updates: dict = {"enriched_by": lead.enriched_by + ["hunter"]}
+        updates = {"enriched_by": lead.enriched_by + ["hunter"]}
 
         if owner_email:
             updates["personal_email"] = owner_email
@@ -119,7 +184,7 @@ class HunterEnricher(EmailEnricher):
         if generic_email and not lead.business_email:
             updates["business_email"] = generic_email
 
-        # Fallback: use the highest-confidence email as business email
+        # Fallback: use highest-confidence email
         if not updates.get("personal_email") and not lead.business_email and emails:
             top = max(emails, key=lambda e: e.get("confidence", 0))
             updates["business_email"] = top.get("value")
