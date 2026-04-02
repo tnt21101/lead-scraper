@@ -1,11 +1,10 @@
 """Apollo.io enrichment provider — emails + social profiles.
 
 Free plan endpoints used:
-1. Organization Enrichment (/v1/organizations/enrich) — company socials by domain
-2. Mixed People Search (/v1/mixed_people/search) — find people by company + seniority
-3. Contacts Search (/v1/contacts/search) — search contacts database
+1. Organization Search (POST /api/v1/mixed_companies/search)
+2. Organization Top People (POST /api/v1/mixed_people/organization_top_people)
 
-NOTE: People Match (/v1/people/match) is NOT available on the free plan.
+NOTE: Auth health check uses a different base: /v1/auth/health (no /api prefix)
 
 Free tier: 75 credits/month, no credit card required.
 API docs: https://docs.apollo.io/reference
@@ -21,14 +20,14 @@ from providers.base import EmailEnricher, SocialEnricher, ProgressCallback
 from utils.rate_limiter import RateLimiter
 from utils.validators import extract_domain
 
-BASE_URL = "https://api.apollo.io/api/v1"
+BASE_URL = "https://api.apollo.io"
 
 
 class ApolloEnricher(EmailEnricher, SocialEnricher):
     """Apollo.io serves as both email and social enricher.
 
-    Uses only free-plan endpoints: organizations/enrich,
-    mixed_people/search, and contacts/search.
+    Uses only free-plan endpoints: mixed_companies/search
+    and mixed_people/organization_top_people.
     """
 
     def __init__(self, api_key: str) -> None:
@@ -50,7 +49,8 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
 
     def test_connection(self) -> bool:
         try:
-            resp = self._client.get("/auth/health")
+            # Health check uses /v1/ not /api/v1/
+            resp = self._client.get("/v1/auth/health")
             return resp.status_code == 200
         except Exception:
             return False
@@ -68,10 +68,10 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
 
         current = lead
 
-        # Step 1: Organization Enrichment — company socials from domain
+        # Step 1: Organization Search — company socials from domain
         current = self._enrich_organization(current, domain)
 
-        # Step 2: Mixed People Search — find owner/senior contacts at company
+        # Step 2: Organization Top People — find owner/senior contacts
         current = self._enrich_people(current, domain)
 
         return current
@@ -85,7 +85,7 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
 
         try:
             resp = self._client.post(
-                "/organizations/search",
+                "/api/v1/mixed_companies/search",
                 json={
                     "organization_domains": [domain],
                     "page": 1,
@@ -103,14 +103,14 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
             except Exception:
                 pass
             raise RuntimeError(
-                "Apollo.io organizations/search returned %d: %s" % (e.response.status_code, body)
+                "Apollo.io mixed_companies/search returned %d: %s" % (e.response.status_code, body)
             ) from e
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError("Apollo.io organizations/search error: %s" % e) from e
+            raise RuntimeError("Apollo.io mixed_companies/search error: %s" % e) from e
 
-        orgs = data.get("organizations") or []
+        orgs = data.get("organizations") or data.get("accounts") or []
         if not orgs:
             return lead
 
@@ -141,12 +141,11 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         self._rate.wait()
 
         try:
-            payload = {
-                "organization_domain": domain,
-            }
-
             resp = self._client.post(
-                "/mixed_people/organization_top_people", json=payload
+                "/api/v1/mixed_people/organization_top_people",
+                json={
+                    "organization_domain": domain,
+                },
             )
             resp.raise_for_status()
             data = resp.json()
@@ -170,7 +169,6 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         if not people:
             return lead
 
-        # Pick the best match — prefer owner/founder, then highest seniority
         person = self._pick_best_person(people, lead.owner_name)
 
         updates = {}
@@ -220,7 +218,7 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
                 if name_lower in (p.get("name") or "").lower():
                     return p
 
-        # Rank by seniority — prefer owners/founders
+        # Rank by seniority
         priority_titles = [
             "owner", "founder", "co-founder", "ceo", "president",
             "cto", "cfo", "coo", "chief", "vp", "vice president",
@@ -232,5 +230,4 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
                 if title_kw in person_title:
                     return p
 
-        # Fallback: return the first person
         return people[0]
