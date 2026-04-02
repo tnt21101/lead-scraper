@@ -77,16 +77,20 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         return current
 
     def _enrich_organization(self, lead: BusinessLead, domain: str) -> BusinessLead:
-        """Use Organization Enrichment to get company social profiles."""
+        """Use Organization Search to get company social profiles."""
         if lead.company_linkedin and lead.company_facebook:
             return lead
 
         self._rate.wait()
 
         try:
-            resp = self._client.get(
-                "/organizations/enrich",
-                params={"domain": domain},
+            resp = self._client.post(
+                "/organizations/search",
+                json={
+                    "organization_domains": [domain],
+                    "page": 1,
+                    "per_page": 1,
+                },
             )
             resp.raise_for_status()
             data = resp.json()
@@ -99,16 +103,18 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
             except Exception:
                 pass
             raise RuntimeError(
-                "Apollo.io organizations/enrich returned %d: %s" % (e.response.status_code, body)
+                "Apollo.io organizations/search returned %d: %s" % (e.response.status_code, body)
             ) from e
         except RuntimeError:
             raise
         except Exception as e:
-            raise RuntimeError("Apollo.io organizations/enrich error: %s" % e) from e
+            raise RuntimeError("Apollo.io organizations/search error: %s" % e) from e
 
-        org = data.get("organization") or {}
-        if not org:
+        orgs = data.get("organizations") or []
+        if not orgs:
             return lead
+
+        org = orgs[0]
 
         updates = {"enriched_by": lead.enriched_by + ["apollo"]}
 
