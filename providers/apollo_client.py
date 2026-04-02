@@ -21,7 +21,7 @@ from providers.base import EmailEnricher, SocialEnricher, ProgressCallback
 from utils.rate_limiter import RateLimiter
 from utils.validators import extract_domain
 
-BASE_URL = "https://api.apollo.io/v1"
+BASE_URL = "https://api.apollo.io/api/v1"
 
 
 class ApolloEnricher(EmailEnricher, SocialEnricher):
