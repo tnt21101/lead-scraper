@@ -121,7 +121,7 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         return lead.model_copy(update=updates)
 
     def _enrich_people(self, lead: BusinessLead, domain: str) -> BusinessLead:
-        """Use Mixed People Search to find owner/senior contacts at the company."""
+        """Use Organization Top People to find owner/senior contacts."""
         if lead.personal_email and lead.owner_linkedin:
             return lead
 
@@ -129,20 +129,12 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
 
         try:
             payload = {
-                "organization_domains": [domain],
-                "person_seniorities": [
-                    "owner", "founder", "c_suite", "vp", "director", "manager",
-                ],
-                "page": 1,
-                "per_page": 1,
+                "organization_domain": domain,
             }
 
-            # If we know the owner name, add it to narrow results
-            if lead.owner_name:
-                parts = lead.owner_name.split(maxsplit=1)
-                payload["person_name"] = lead.owner_name
-
-            resp = self._client.post("/mixed_people/search", json=payload)
+            resp = self._client.post(
+                "/mixed_people/organization_top_people", json=payload
+            )
             resp.raise_for_status()
             data = resp.json()
         except httpx.HTTPStatusError as e:
@@ -154,11 +146,12 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         except Exception:
             return lead
 
-        people = data.get("people") or []
+        people = data.get("people") or data.get("top_people") or []
         if not people:
             return lead
 
-        person = people[0]
+        # Pick the best match — prefer owner/founder, then highest seniority
+        person = self._pick_best_person(people, lead.owner_name)
 
         updates = {}
         if "apollo" not in lead.enriched_by:
@@ -193,3 +186,31 @@ class ApolloEnricher(EmailEnricher, SocialEnricher):
         if updates:
             return lead.model_copy(update=updates)
         return lead
+
+    @staticmethod
+    def _pick_best_person(people: list, owner_name: Optional[str] = None) -> dict:
+        """Pick the most relevant person from a list of top people."""
+        if not people:
+            return {}
+
+        # If we know the owner name, look for them first
+        if owner_name:
+            name_lower = owner_name.lower()
+            for p in people:
+                if name_lower in (p.get("name") or "").lower():
+                    return p
+
+        # Rank by seniority — prefer owners/founders
+        priority_titles = [
+            "owner", "founder", "co-founder", "ceo", "president",
+            "cto", "cfo", "coo", "chief", "vp", "vice president",
+            "director", "manager",
+        ]
+        for title_kw in priority_titles:
+            for p in people:
+                person_title = (p.get("title") or "").lower()
+                if title_kw in person_title:
+                    return p
+
+        # Fallback: return the first person
+        return people[0]
